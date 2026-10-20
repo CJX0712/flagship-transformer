@@ -122,6 +122,34 @@
     out._backward = () => accumulate(a, transpose2(out.grad));
     out._prev = [a]; return out;
   }
+  // RoPE 旋转位置编码（Su et al. 2021, arXiv:2104.09864；Llama/RoPE 系所用）
+  // 对每对维度按位置 p 旋转；作用于 Q/K，使点积依赖相对位置，支持任意长度外推。
+  function ropeRotate(row, p, base, sign) {
+    const d = row.length, out = new Array(d);
+    for (let i = 0; i < d; i += 2) {
+      const theta = p / Math.pow(base, i / d);
+      const c = Math.cos(theta), s = sign * Math.sin(theta);
+      const a = row[i], b = row[i + 1];
+      out[i] = a * c - b * s;
+      out[i + 1] = a * s + b * c;
+    }
+    return out;
+  }
+  function rope(X, positions, base) {
+    base = base || 10000;
+    const seq = X.shape[0], d = X.shape[1];
+    const Y = X.data.map((row, i) => ropeRotate(row, positions[i], base, +1));
+    const out = new T(Y);
+    out._backward = () => {
+      const gX = zeros2(seq, d);
+      for (let i = 0; i < seq; i++) {
+        const g = ropeRotate(out.grad[i], positions[i], base, -1); // 反向 = 逆旋转（正交）
+        for (let j = 0; j < d; j++) gX[i][j] = g[j];
+      }
+      accumulate(X, gX);
+    };
+    out._prev = [X]; return out;
+  }
   function sumAll(a) {
     let s = 0; const d = a.data;
     for (let i = 0; i < a.shape[0]; i++) for (let j = 0; j < a.shape[1]; j++) s += d[i][j];
@@ -307,8 +335,8 @@
     const ones = (r, c) => Array.from({ length: r }, () => new Array(c).fill(1));
 
     const params = [];
-    const E = param(xav(vocab, d)); params.push(E);            // 词嵌入（同时绑定输出头）
-    const P = param(xav(cfg.maxlen, d)); params.push(P);       // 位置嵌入
+    const E = param(xav(vocab, d)); params.push(E);            // 词嵌入
+    // RoPE：位置由 rope 作用于 Q/K 注入，无绝对位置表，支持任意长度外推
     const blocks = [];
     for (let l = 0; l < layers; l++) {
       const b = {
@@ -330,13 +358,14 @@
     }
 
     function forward(ids, pos, targets) {
-      let x = add(embedding(ids, E), embedding(pos, P));
+      let x = embedding(ids, E);
       const mask = causalMask(ids.length);
       for (const b of blocks) {
         const xn = rmsNorm(x, b.ln1);
-        const Q = addBias(matmul(xn, b.Wq), b.bq);
-        const K = addBias(matmul(xn, b.Wk), b.bk);
+        let Q = addBias(matmul(xn, b.Wq), b.bq);
+        let K = addBias(matmul(xn, b.Wk), b.bk);
         const V = addBias(matmul(xn, b.Wv), b.bv);
+        Q = rope(Q, pos); K = rope(K, pos);               // RoPE 注入相对位置
         const attn = multiHeadAttention(Q, K, V, heads, mask);
         const attnProj = matmul(attn, b.Wo);
         x = add(x, attnProj);
@@ -351,7 +380,7 @@
       const loss = crossEntropy(logitsT, [targets]);
       return { loss, logits: logitsT.data[0], params };
     }
-    return { params, forward, E, P, blocks, blm };
+    return { params, forward, E, blocks, Wlm, blm };
   }
 
   // 基线：无注意力（平均池化 + 线性）—— 给"最先进"当对手
@@ -411,6 +440,11 @@
   }
   function genDatasetInduction(rng, vocab, L, n) {
     return Array.from({ length: n }, () => genExampleInduction(rng, vocab, L));
+  }
+  // 变长归纳：L ∈ [Lmin, Lmax] 随机，用于训练时覆盖多长度
+  function genExampleInductionVar(rng, vocab, Lmin, Lmax) {
+    const L = Lmin + Math.floor(rng() * (Lmax - Lmin + 1));
+    return genExampleInduction(rng, vocab, L);
   }
 
   // ===================== 训练一步（含可选梯度裁剪，防发散） =====================
@@ -474,6 +508,44 @@
     };
   }
 
+  // ===================== 长度泛化基准（上移尺子） =====================
+  // 训练只用 L∈[trainLmin,trainLmax]，测试喂（可能未见的）更长序列。
+  // 直接量化：RoPE 架构能否把"attend back 距离 d"的模式外推到更大 d。
+  // 两个 regime 对照：
+  //   - extrapolate: 训练短 L∈[3,7]，测长 L∈{12,20}  → 测"外推"
+  //   - indistlong : 训练长 L∈[15,20]，测 L∈{17,20} → 测"见过长度时能否做好"
+  function runGeneralizationBenchmark(opts) {
+    opts = opts || {};
+    const cfg = { d: 64, heads: 4, layers: 4, ffn: 256, maxlen: 64 };
+    const vocab = 16;
+    const Lmin = opts.trainLmin || 3, Lmax = opts.trainLmax || 7;
+    const steps = opts.steps || 4000;
+    const testLens = opts.testLens || [12, 20];
+    const baseLr = 3e-3, clip = 1.0, decay = 0.9;
+
+    const trng = APEX.makeRng(20261021);
+    const train = Array.from({ length: 6000 }, () => genExampleInductionVar(trng, vocab, Lmin, Lmax));
+
+    function trainModel(build) {
+      const m = build(vocab, cfg, APEX.makeRng(7));
+      const opt = new AdamWOpt(m.params, baseLr, 0.9, 0.999, 1e-8, 0);
+      for (let s = 0; s < steps; s++) { opt.lr = baseLr * (1 - (s / steps) * decay); trainStep(m, train[s % train.length], opt, clip); }
+      return m;
+    }
+    const tf = trainModel(buildTransformer);
+    const bs = trainModel(buildBaseline);
+
+    function evalAt(m, L) {
+      const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 200);
+      return evaluate(m, data);
+    }
+    const res = { cfg, trainLmin: Lmin, trainLmax: Lmax, steps, perLen: {} };
+    testLens.forEach((L) => { res.perLen[L] = { transformer: evalAt(tf, L), baseline: evalAt(bs, L) }; });
+    res.beatsBaselineEverywhere = testLens.every((L) => res.perLen[L].transformer.acc > res.perLen[L].baseline.acc);
+    res.transformerWins = testLens.every((L) => res.perLen[L].transformer.acc > res.perLen[L].baseline.acc + 0.15);
+    return res;
+  }
+
   // ===================== 自检（可被独立实现交叉验证的不变量） =====================
   function approx(a, b, tol) { return Math.abs(a - b) <= tol; }
   function maxRelErr(a, b) {
@@ -531,6 +603,19 @@
       const analytic = [], numeric = [];
       for (let i = 0; i < 3; i++) for (let j = 0; j < 6; j++) { analytic.push(logits.grad[i][j]); numeric.push(numericGrad(lossFn, logits, i, j, 1e-4)); }
       results.push({ name: 'crossEntropy 梯度', pass: maxRelErr(analytic, numeric) < 1e-5, detail: `maxRelErr=${maxRelErr(analytic, numeric).toExponential(2)}` });
+    }
+
+    // ③b RoPE 梯度 vs 中心差分（旋转为正交变换，反向应为逆旋转）
+    {
+      const rng = APEX.makeRng(7);
+      const d = 8;
+      const X = param(Array.from({ length: 3 }, () => Array.from({ length: d }, () => APEX.randn(rng))));
+      const positions = [0, 3, 17];
+      const lossFn = () => sumAll(rope(X, positions)).data[0][0];
+      const loss = sumAll(rope(X, positions)); backward(loss);
+      const analytic = [], numeric = [];
+      for (let i = 0; i < 3; i++) for (let j = 0; j < d; j++) { analytic.push(X.grad[i][j]); numeric.push(numericGrad(lossFn, X, i, j, 1e-4)); }
+      results.push({ name: 'RoPE 梯度', pass: maxRelErr(analytic, numeric) < 1e-5, detail: `maxRelErr=${maxRelErr(analytic, numeric).toExponential(2)}` });
     }
 
     // ④ 因果注意力：位置 i 不看 j>i（改变 V[j>i] 不影响 out[i]）
@@ -592,9 +677,9 @@
   }
 
   const TRANSFORMER = {
-    buildTransformer, buildBaseline, runBenchmark, runSelfTest,
-    genExample, genDataset, genExampleInduction, genDatasetInduction,
-    multiHeadAttention, rmsNorm, crossEntropy,
+    buildTransformer, buildBaseline, runBenchmark, runGeneralizationBenchmark, runSelfTest,
+    genExample, genDataset, genExampleInduction, genDatasetInduction, genExampleInductionVar,
+    multiHeadAttention, rmsNorm, crossEntropy, rope,
     matmul, add, addBias, embedding, gelu, backward, T, AdamWOpt,
     clipGrads, globalGradNorm, trainStep, evaluate,
   };

@@ -55,7 +55,7 @@
     <div class="layers">
       <div class="layer"><div class="lnum">L1</div><div><b>数据/分词</b> · 归纳任务序列生成 <span class="detail">genExampleInduction</span></div></div>
       <div class="layer"><div class="lnum">L2</div><div><b>张量/嵌入</b> · 词嵌入查找 <span class="detail">embedding(ids, E)</span></div></div>
-      <div class="layer"><div class="lnum">L3</div><div><b>位置编码</b> · 学习型绝对位置嵌入 <span class="detail">+ P</span></div></div>
+      <div class="layer"><div class="lnum">L3</div><div><b>位置编码</b> · RoPE 旋转位置编码（作用于 Q/K，注入相对位置，支持任意长度） <span class="detail">rope(Q,pos) / rope(K,pos)</span></div></div>
       <div class="layer"><div class="lnum">L4</div><div><b>注意力</b> · 因果多头缩放点积 <span class="detail">multiHeadAttention</span></div></div>
       <div class="layer"><div class="lnum">L5</div><div><b>前馈 MLP</b> · GeLU 扩张-收缩 <span class="detail">W1→GeLU→W2</span></div></div>
       <div class="layer"><div class="lnum">L6</div><div><b>残差/预归一化</b> · RMSNorm + 残差 <span class="detail">x = x + f(rmsNorm(x))</span></div></div>
@@ -75,7 +75,19 @@
     </div>
   </div>
 
-  <footer>作者：晨星 (GitHub: CJX0712) · 许可：MIT · 站在世界顶级成果之上（Vaswani/LayerNorm/AdamW/autograd）</footer>
+  <div class="sec">
+    <h2>长上下文与长度外推（上移后的尺子 · 诚实结论）</h2>
+    <div class="bench">
+      <p style="margin:0 0 12px;font-size:14px;color:var(--sub)">把尺子往上移一格：更长序列、更大模型（d=64 / 4 层），并要求模型<b>外推到训练时没见过的长度</b>。下面是真实测量结果。</p>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <thead><tr style="background:#f1f5f9"><th style="text-align:left;padding:8px 10px">实验</th><th style="text-align:left;padding:8px 10px">设置</th><th style="text-align:left;padding:8px 10px">注意力 Transformer</th><th style="text-align:left;padding:8px 10px">无注意力基线</th><th style="text-align:left;padding:8px 10px">结论</th></tr></thead>
+        <tbody id="longBody"></tbody>
+      </table>
+      <p style="margin:14px 0 0;font-size:13px;color:var(--sub)">复现：<code>node bench-long.js 10000</code>（约 10–15 分钟，深度基准）</p>
+    </div>
+  </div>
+
+  <footer>作者：晨星 (GitHub: CJX0712) · 许可：MIT · 站在世界顶级成果之上（Vaswani/RMSNorm/RoPE/AdamW/autograd）</footer>
 </div>
 
 <script src="apex-forge.js"></script>
@@ -95,6 +107,18 @@
   const score = document.getElementById('score');
   score.className = 'score ' + (pass === r.length ? 'ok' : 'bad');
   score.textContent = `核心自检：${pass}/${r.length} 通过（基准待按钮触发）`;
+
+  // 长上下文 / 长度外推 真实测量结果（由 node bench-long.js 10000 复现产出）
+  const LONG = [
+    ['长上下文 · L=17', '训练 L∈[15,20]，d=64/4层，10000 步', 'acc 0.90 / loss 0.38', 'acc 0.14 / loss 2.50', '✅ 注意力碾压'],
+    ['长上下文 · L=20', '训练 L∈[15,20]，d=64/4层，10000 步', 'acc 0.89 / loss 0.67', 'acc 0.17 / loss 2.52', '✅ 注意力碾压'],
+    ['长度外推 · L=8', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.49', 'acc 0.15', '⚠️ 优势在衰减'],
+    ['长度外推 · L=12', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.26', 'acc 0.19', '⚠️ 优势在衰减'],
+    ['长度外推 · L=20', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.16', 'acc 0.18', '❌ 崩塌到基线'],
+    ['长度外推 · L=30', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.14', 'acc 0.17', '❌ 崩塌到基线'],
+  ];
+  document.getElementById('longBody').innerHTML = LONG.map((r) =>
+    `<tr style="border-top:1px solid var(--line)">${r.map((c, i) => `<td style="padding:8px 10px${i === 4 ? ';font-weight:700' : ''}">${c}</td>`).join('')}</tr>`).join('');
 
   document.getElementById('benchBtn').onclick = function () {
     this.disabled = true; this.textContent = '训练中（约 10 秒）…';
