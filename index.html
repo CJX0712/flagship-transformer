@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>APEX-TRANSFORMER · 旗舰 Transformer 参考实现 + 基准</title>
+<style>
+  :root { --bg:#f7f8fa; --card:#fff; --ink:#1f2329; --sub:#6b7280; --line:#e5e7eb; --ok:#16a34a; --bad:#dc2626; --accent:#2563eb; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;line-height:1.6;padding:32px 16px}
+  .wrap{max-width:900px;margin:0 auto}
+  header{text-align:center;margin-bottom:8px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:1px}
+  .tag{color:var(--sub);font-size:14px}
+  .sec{margin-top:30px}
+  .sec h2{font-size:18px;border-left:4px solid var(--accent);padding-left:10px;margin-bottom:14px}
+  .grid{display:grid;gap:10px}
+  .item{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:14px}
+  .badge{width:32px;height:32px;border-radius:9px;flex:none;display:grid;place-items:center;color:#fff;font-size:16px}
+  .badge.ok{background:var(--ok)}.badge.bad{background:var(--bad)}
+  .meta{flex:1}.name{font-weight:600}
+  .detail{color:var(--sub);font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .score{display:inline-flex;gap:10px;margin:14px auto 0;padding:8px 20px;border-radius:999px;font-weight:700;border:1px solid var(--line);background:var(--card)}
+  .score.ok{color:var(--ok);border-color:#bbf7d0}
+  button{background:var(--accent);color:#fff;border:none;padding:10px 20px;border-radius:10px;font-size:15px;cursor:pointer;font-weight:600}
+  button:disabled{opacity:.6;cursor:default}
+  .layers{display:grid;gap:8px}
+  .layer{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;display:flex;gap:12px;align-items:center}
+  .lnum{width:34px;height:34px;border-radius:8px;background:#eef2ff;color:var(--accent);font-weight:700;display:grid;place-items:center;flex:none}
+  .bar{height:26px;border-radius:7px;position:relative;overflow:hidden;color:#fff;font-size:13px;display:flex;align-items:center;padding:0 10px;font-weight:600;min-width:40px}
+  .bar.tf{background:var(--ok)}.bar.base{background:#9ca3af}
+  .bench{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .rowline{display:flex;align-items:center;gap:12px;margin:10px 0}
+  .rowline .lbl{width:120px;color:var(--sub);font-size:13px}
+  .num{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--ink);white-space:nowrap}
+  footer{text-align:center;color:var(--sub);font-size:13px;margin-top:34px}
+  code{background:#f1f5f9;padding:1px 6px;border-radius:5px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>APEX-TRANSFORMER</h1>
+    <div class="tag">旗舰 Transformer 参考实现 + 基准对照 · 零依赖 · 反向自动微分 · 十层架构</div>
+    <div id="score" class="score">核心自检中…</div>
+  </header>
+
+  <div class="sec">
+    <h2>核心自检（可被独立实现交叉验证的不变量）</h2>
+    <div id="grid" class="grid"></div>
+  </div>
+
+  <div class="sec">
+    <h2>十层架构分解</h2>
+    <div class="layers">
+      <div class="layer"><div class="lnum">L1</div><div><b>数据/分词</b> · 归纳任务序列生成 <span class="detail">genExampleInduction</span></div></div>
+      <div class="layer"><div class="lnum">L2</div><div><b>张量/嵌入</b> · 词嵌入查找 <span class="detail">embedding(ids, E)</span></div></div>
+      <div class="layer"><div class="lnum">L3</div><div><b>位置编码</b> · 学习型绝对位置嵌入 <span class="detail">+ P</span></div></div>
+      <div class="layer"><div class="lnum">L4</div><div><b>注意力</b> · 因果多头缩放点积 <span class="detail">multiHeadAttention</span></div></div>
+      <div class="layer"><div class="lnum">L5</div><div><b>前馈 MLP</b> · GeLU 扩张-收缩 <span class="detail">W1→GeLU→W2</span></div></div>
+      <div class="layer"><div class="lnum">L6</div><div><b>残差/预归一化</b> · RMSNorm + 残差 <span class="detail">x = x + f(rmsNorm(x))</span></div></div>
+      <div class="layer"><div class="lnum">L7</div><div><b>层堆叠</b> · N 个预归一化块 <span class="detail">layers=3</span></div></div>
+      <div class="layer"><div class="lnum">L8</div><div><b>输出头</b> · 线性投影到词表 <span class="detail">matmul(xLast, Wlm)+blm</span></div></div>
+      <div class="layer"><div class="lnum">L9</div><div><b>损失</b> · 数值稳定交叉熵 + 反向自动微分 <span class="detail">crossEntropy → backward()</span></div></div>
+      <div class="layer"><div class="lnum">L10</div><div><b>评估/基准</b> · 归纳任务上注意力 vs 无注意力 <span class="detail">runBenchmark</span></div></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>基准对照 · 归纳头任务（给"最先进"一把尺子）</h2>
+    <div class="bench">
+      <p style="margin:0 0 12px;font-size:14px;color:var(--sub)">任务：序列 <code>[c0..c7, c0]</code> → 预测 <code>c1</code>。注意力必须把末尾 c0 路由回首位置读取后继；平均池化无位置信息，必然失败。训练 2000 步（AdamW + 梯度裁剪 + LR 衰减）。</p>
+      <button id="benchBtn">运行基准</button>
+      <div id="benchOut" style="margin-top:16px"></div>
+    </div>
+  </div>
+
+  <footer>作者：晨星 (GitHub: CJX0712) · 许可：MIT · 站在世界顶级成果之上（Vaswani/LayerNorm/AdamW/autograd）</footer>
+</div>
+
+<script src="apex-forge.js"></script>
+<script src="apex-transformer.js"></script>
+<script>
+  // 核心自检（跳过耗时的基准，基准由按钮触发）
+  const r = APEX_T.runSelfTest({ skipBenchmark: true });
+  const grid = document.getElementById('grid');
+  let pass = 0;
+  r.forEach((x) => {
+    if (x.pass) pass++;
+    const d = document.createElement('div');
+    d.className = 'item';
+    d.innerHTML = `<div class="badge ${x.pass ? 'ok' : 'bad'}">${x.pass ? '✓' : '✕'}</div><div class="meta"><div class="name">${x.name}</div><div class="detail">${x.detail}</div></div>`;
+    grid.appendChild(d);
+  });
+  const score = document.getElementById('score');
+  score.className = 'score ' + (pass === r.length ? 'ok' : 'bad');
+  score.textContent = `核心自检：${pass}/${r.length} 通过（基准待按钮触发）`;
+
+  document.getElementById('benchBtn').onclick = function () {
+    this.disabled = true; this.textContent = '训练中（约 10 秒）…';
+    setTimeout(() => {
+      const b = APEX_T.runBenchmark({ steps: 2000 });
+      const out = document.getElementById('benchOut');
+      const rows = [
+        ['注意力 Transformer', b.transformer.loss, b.transformer.acc, 'tf'],
+        ['无注意力基线', b.baseline.loss, b.baseline.acc, 'base'],
+      ];
+      const maxAcc = Math.max(b.transformer.acc, b.baseline.acc, 0.01);
+      out.innerHTML = rows.map(([n, ls, acc, cls]) =>
+        `<div class="rowline"><div class="lbl">${n}</div>
+         <div class="bar ${cls}" style="width:${Math.max(6, (acc / maxAcc) * 70)}%">${(acc * 100).toFixed(0)}%</div>
+         <div class="num">loss=${ls.toFixed(3)} acc=${acc.toFixed(2)}</div></div>`).join('')
+        + `<div style="margin-top:10px;font-weight:700;color:${b.transformerWins ? 'var(--ok)' : 'var(--bad)'}">${b.transformerWins ? '✅ 注意力架构碾压无注意力基线——归纳偏置真实成立' : '❌ 未能拉开差距'}</div>`;
+      this.disabled = false; this.textContent = '重新运行基准';
+    }, 30);
+  };
+</script>
+</body>
+</html>
