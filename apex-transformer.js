@@ -657,7 +657,7 @@
     opts = opts || {};
     const cfg = opts.cfg || { d: 64, heads: 4, layers: 4, ffn: 256 };
     const vocab = 16;
-    const baseLr = 3e-3, clip = 1.0, decay = 0.9;
+    const baseLr = opts.lr || 3e-3, clip = 1.0, decay = (opts.decay !== undefined ? opts.decay : 0.9);
     const steps = opts.steps || 4000;
     const testLens = opts.testLens || [30, 40];
     const shortLmin = 3, shortLmax = 7;

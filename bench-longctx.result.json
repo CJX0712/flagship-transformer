@@ -1,13 +1,13 @@
 {
   "cfg": {
-    "d": 48,
-    "heads": 3,
-    "layers": 3,
-    "ffn": 192
+    "d": 64,
+    "heads": 4,
+    "layers": 4,
+    "ffn": 256
   },
   "shortLmax": 7,
   "longMax": 40,
-  "steps": 8000,
+  "steps": 12000,
   "testLens": [
     30,
     40,
@@ -17,82 +17,82 @@
   "perLen": {
     "30": {
       "shortPlain": {
-        "loss": 10.206693340891725,
-        "acc": 0.084
+        "loss": 6.297328765172235,
+        "acc": 0.194
       },
       "shortYaRN": {
-        "loss": 9.315986706952263,
-        "acc": 0.256
+        "loss": 4.465568885778656,
+        "acc": 0.528
       },
       "longPlain": {
-        "loss": 5.736763488097601,
-        "acc": 0.252
+        "loss": 3.7465187051277478,
+        "acc": 0.384
       },
       "longYaRN": {
-        "loss": 5.906751131756375,
-        "acc": 0.282
+        "loss": 0.793260064474629,
+        "acc": 0.824
       }
     },
     "40": {
       "shortPlain": {
-        "loss": 9.733483189431569,
-        "acc": 0.062
+        "loss": 6.811768824006392,
+        "acc": 0.148
       },
       "shortYaRN": {
-        "loss": 11.242609101245016,
-        "acc": 0.186
+        "loss": 4.6264879996500055,
+        "acc": 0.482
       },
       "longPlain": {
-        "loss": 4.579329716459937,
-        "acc": 0.316
+        "loss": 1.1775027942155596,
+        "acc": 0.748
       },
       "longYaRN": {
-        "loss": 4.579329716459937,
-        "acc": 0.316
+        "loss": 1.1775027942155616,
+        "acc": 0.748
       }
     },
     "50": {
       "shortPlain": {
-        "loss": 9.66469835233876,
-        "acc": 0.092
+        "loss": 6.845695790582314,
+        "acc": 0.176
       },
       "shortYaRN": {
-        "loss": 11.685080333241544,
-        "acc": 0.188
+        "loss": 5.224180459192076,
+        "acc": 0.422
       },
       "longPlain": {
-        "loss": 5.157577925744191,
-        "acc": 0.236
+        "loss": 5.401937512669865,
+        "acc": 0.358
       },
       "longYaRN": {
-        "loss": 6.178561897452049,
-        "acc": 0.244
+        "loss": 2.6759586066602035,
+        "acc": 0.576
       }
     },
     "60": {
       "shortPlain": {
-        "loss": 8.458019052963104,
-        "acc": 0.098
+        "loss": 7.5904626157873425,
+        "acc": 0.114
       },
       "shortYaRN": {
-        "loss": 12.174684199514548,
-        "acc": 0.166
+        "loss": 5.204711041782279,
+        "acc": 0.406
       },
       "longPlain": {
-        "loss": 6.055279275095572,
-        "acc": 0.148
+        "loss": 4.133510804913523,
+        "acc": 0.334
       },
       "longYaRN": {
-        "loss": 5.859802488466958,
-        "acc": 0.238
+        "loss": 3.207705506384649,
+        "acc": 0.516
       }
     }
   },
-  "shortPlainAcc": 0.098,
-  "shortAcc": 0.166,
-  "longPlainAcc": 0.148,
-  "longYaRNacc": 0.238,
-  "nativeImproved": false,
-  "longYaRNbeatsShort": false,
+  "shortPlainAcc": 0.114,
+  "shortAcc": 0.406,
+  "longPlainAcc": 0.334,
+  "longYaRNacc": 0.516,
+  "nativeImproved": true,
+  "longYaRNbeatsShort": true,
   "improved": false
 }

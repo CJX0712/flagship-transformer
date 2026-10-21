@@ -36,14 +36,15 @@ function parseCfg(s) {
 }
 const CURRIC = parseCurric(process.argv[4]);
 const CFG = parseCfg(process.argv[5]);
+const LR = parseFloat(process.argv[6]) || 3e-3;
 const curricStr = CURRIC.map((c) => `[${c[0]},${c[1]}]`).join('→');
 const t0 = Date.now();
 const el = () => ((Date.now() - t0) / 1000).toFixed(0) + 's';
 
-console.log(`\n=== ⑤ 长上下文预训练基准 (steps=${STEPS}, 测试未见长度=${TESTLENS.join('/')}, cfg d=${CFG.d}/L${CFG.layers}) ===`);
+console.log(`\n=== ⑤ 长上下文预训练基准 (steps=${STEPS}, 测试未见长度=${TESTLENS.join('/')}, cfg d=${CFG.d}/L${CFG.layers}, lr=${LR}) ===`);
 console.log(`长度课程: ${curricStr}（最长训练长度=${CURRIC[CURRIC.length - 1][1]}）\n`);
 
-const r = T.runLongContextBenchmark({ steps: STEPS, testLens: TESTLENS, cfg: CFG, curric: CURRIC });
+const r = T.runLongContextBenchmark({ steps: STEPS, testLens: TESTLENS, cfg: CFG, curric: CURRIC, lr: LR });
 
 const pad = (n) => (n >= 0 ? ' ' : '') + n.toFixed(2);
 console.log('长度  | 短训原生 | 短训+YaRN | 长训原生 | 长训+YaRN | 结论');
