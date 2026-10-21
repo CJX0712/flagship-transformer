@@ -1,0 +1,49 @@
+{
+  "cfg": {
+    "d": 48,
+    "heads": 3,
+    "layers": 3,
+    "ffn": 192
+  },
+  "shortLmax": 7,
+  "longMax": 20,
+  "steps": 8000,
+  "testLens": [
+    30,
+    40
+  ],
+  "perLen": {
+    "30": {
+      "shortYaRN": {
+        "loss": 9.315986706952263,
+        "acc": 0.256
+      },
+      "longPlain": {
+        "loss": 4.994175093564092,
+        "acc": 0.168
+      },
+      "longYaRN": {
+        "loss": 6.349846250710051,
+        "acc": 0.154
+      }
+    },
+    "40": {
+      "shortYaRN": {
+        "loss": 11.242609101245016,
+        "acc": 0.186
+      },
+      "longPlain": {
+        "loss": 5.176059687482268,
+        "acc": 0.162
+      },
+      "longYaRN": {
+        "loss": 3.652118106047814,
+        "acc": 0.392
+      }
+    }
+  },
+  "shortAcc": 0.186,
+  "longPlainAcc": 0.162,
+  "longYaRNacc": 0.392,
+  "improved": false
+}

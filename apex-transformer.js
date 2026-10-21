@@ -274,56 +274,58 @@
   }
 
   // 因果多头缩放点积注意力（自实现以接入可微图）
+  // 因果多头缩放点积注意力。
+  // 支持 Q 与 K/V 行数不同（qLen vs kvLen）——这是 KV-Cache 解码与交叉注意力的通用形态。
   function multiHeadAttention(Q, K, V, heads, mask) {
-    const seq = Q.shape[0], d = Q.shape[1], dk = Math.floor(d / heads);
-    const outData = zeros2(seq, d), Wh = [], scoresH = [];
+    const qLen = Q.shape[0], kvLen = K.shape[0], d = Q.shape[1], dk = Math.floor(d / heads);
+    const outData = zeros2(qLen, d), Wh = [], scoresH = [];
     for (let h = 0; h < heads; h++) {
       const Qh = [], Kh = [], Vh = [];
-      for (let i = 0; i < seq; i++) {
-        Qh.push(Q.data[i].slice(h * dk, (h + 1) * dk));
-        Kh.push(K.data[i].slice(h * dk, (h + 1) * dk));
-        Vh.push(V.data[i].slice(h * dk, (h + 1) * dk));
+      for (let i = 0; i < qLen; i++) Qh.push(Q.data[i].slice(h * dk, (h + 1) * dk));
+      for (let j = 0; j < kvLen; j++) {
+        Kh.push(K.data[j].slice(h * dk, (h + 1) * dk));
+        Vh.push(V.data[j].slice(h * dk, (h + 1) * dk));
       }
-      const w = zeros2(seq, seq), scores = zeros2(seq, seq), inv = 1 / Math.sqrt(dk);
-      for (let i = 0; i < seq; i++) {
+      const w = zeros2(qLen, kvLen), scores = zeros2(qLen, kvLen), inv = 1 / Math.sqrt(dk);
+      for (let i = 0; i < qLen; i++) {
         let m = -Infinity;
-        for (let j = 0; j < seq; j++) {
+        for (let j = 0; j < kvLen; j++) {
           let s = 0; for (let k = 0; k < dk; k++) s += Qh[i][k] * Kh[j][k];
           s *= inv; if (mask && !mask[i][j]) s = -1e9; scores[i][j] = s; m = Math.max(m, s);
         }
-        let sm = 0; for (let j = 0; j < seq; j++) { const e = Math.exp(scores[i][j] - m); w[i][j] = e; sm += e; }
-        for (let j = 0; j < seq; j++) w[i][j] /= sm;
-        for (let j = 0; j < seq; j++) for (let k = 0; k < dk; k++) outData[i][h * dk + k] += w[i][j] * Vh[j][k];
+        let sm = 0; for (let j = 0; j < kvLen; j++) { const e = Math.exp(scores[i][j] - m); w[i][j] = e; sm += e; }
+        for (let j = 0; j < kvLen; j++) w[i][j] /= sm;
+        for (let j = 0; j < kvLen; j++) for (let k = 0; k < dk; k++) outData[i][h * dk + k] += w[i][j] * Vh[j][k];
       }
       Wh.push(w); scoresH.push(scores);
     }
     const out = new T(outData);
     out._backward = () => {
-      const dQ = zeros2(seq, d), dK = zeros2(seq, d), dV = zeros2(seq, d);
+      const dQ = zeros2(qLen, d), dK = zeros2(kvLen, d), dV = zeros2(kvLen, d);
       for (let h = 0; h < heads; h++) {
         const w = Wh[h], inv = 1 / Math.sqrt(dk);
-        const dw = zeros2(seq, seq);
-        for (let i = 0; i < seq; i++)
-          for (let j = 0; j < seq; j++) {
+        const dw = zeros2(qLen, kvLen);
+        for (let i = 0; i < qLen; i++)
+          for (let j = 0; j < kvLen; j++) {
             let s = 0; for (let k = 0; k < dk; k++) s += out.grad[i][h * dk + k] * V.data[j][h * dk + k];
             dw[i][j] = s;
           }
-        const ds = zeros2(seq, seq);
-        for (let i = 0; i < seq; i++) {
-          let rs = 0; for (let j = 0; j < seq; j++) rs += dw[i][j] * w[i][j];
-          for (let j = 0; j < seq; j++) { let v = w[i][j] * (dw[i][j] - rs); if (mask && !mask[i][j]) v = 0; ds[i][j] = v; }
+        const ds = zeros2(qLen, kvLen);
+        for (let i = 0; i < qLen; i++) {
+          let rs = 0; for (let j = 0; j < kvLen; j++) rs += dw[i][j] * w[i][j];
+          for (let j = 0; j < kvLen; j++) { let v = w[i][j] * (dw[i][j] - rs); if (mask && !mask[i][j]) v = 0; ds[i][j] = v; }
         }
-        for (let j = 0; j < seq; j++)
+        for (let j = 0; j < kvLen; j++)
           for (let k = 0; k < dk; k++) {
-            let s = 0; for (let i = 0; i < seq; i++) s += w[i][j] * out.grad[i][h * dk + k]; dV[j][h * dk + k] += s;
+            let s = 0; for (let i = 0; i < qLen; i++) s += w[i][j] * out.grad[i][h * dk + k]; dV[j][h * dk + k] += s;
           }
-        for (let i = 0; i < seq; i++)
+        for (let i = 0; i < qLen; i++)
           for (let k = 0; k < dk; k++) {
-            let s = 0; for (let j = 0; j < seq; j++) s += ds[i][j] * K.data[j][h * dk + k]; dQ[i][h * dk + k] += s * inv;
+            let s = 0; for (let j = 0; j < kvLen; j++) s += ds[i][j] * K.data[j][h * dk + k]; dQ[i][h * dk + k] += s * inv;
           }
-        for (let j = 0; j < seq; j++)
+        for (let j = 0; j < kvLen; j++)
           for (let k = 0; k < dk; k++) {
-            let s = 0; for (let i = 0; i < seq; i++) s += ds[i][j] * Q.data[i][h * dk + k]; dK[j][h * dk + k] += s * inv;
+            let s = 0; for (let i = 0; i < qLen; i++) s += ds[i][j] * Q.data[i][h * dk + k]; dK[j][h * dk + k] += s * inv;
           }
       }
       accumulate(Q, dQ); accumulate(K, dK); accumulate(V, dV);
@@ -640,6 +642,95 @@
     return res;
   }
 
+  // ===================== ⑤ 长上下文预训练：真正补外推（而非仅靠推理期缩放） =====================
+  // 思路：外推崩塌的根本原因是"训练从没见过那么长的位置"。光靠 YaRN 在推理期缩放位置，
+  // 救得回一部分（L=30: 0.19→0.52）但救不回同分布水平的 0.89。真正的能力修复是——
+  // 让模型在训练期就见过更长、更丰富的长度分布（长度课程 length-curriculum），
+  // 把"attend-back 距离"的模式训进权重里，外推变成"见过附近长度后的自然延伸"。
+  //
+  // 对照两种 regime 在【相同未见长度】上的表现：
+  //   A. short+YaRN  —— 旧补洞方案（训练 L∈[3,7]，推理期 YaRN 缩放）
+  //   B. longCurric  —— ⑤ 长上下文预训练（课程 [3,7]→[8,15]→[16,24]，逐段拉长）
+  //      · longPlain  : 推理期用原生 RoPE（不再靠缩放补丁）
+  //      · longYaRN   : 推理期对超出训练上限的长度再叠 YaRN（集大成：长训 + 缩放双保险）
+  function runLongContextBenchmark(opts) {
+    opts = opts || {};
+    const cfg = opts.cfg || { d: 64, heads: 4, layers: 4, ffn: 256 };
+    const vocab = 16;
+    const baseLr = 3e-3, clip = 1.0, decay = 0.9;
+    const steps = opts.steps || 4000;
+    const testLens = opts.testLens || [30, 40];
+    const shortLmin = 3, shortLmax = 7;
+    const curric = opts.curric || [[3, 7], [8, 15], [16, 24]];
+    const longMax = curric[curric.length - 1][1];
+
+    // —— Regime A：短训练（旧方案的数据） ——
+    const trngS = APEX.makeRng(20261021);
+    const trainShort = Array.from({ length: 6000 }, () => genExampleInductionVar(trngS, vocab, shortLmin, shortLmax));
+
+    function trainShortModel() {
+      const m = buildTransformer(vocab, cfg, APEX.makeRng(7));
+      const opt = new AdamWOpt(m.params, baseLr, 0.9, 0.999, 1e-8, 0);
+      for (let s = 0; s < steps; s++) { opt.lr = baseLr * (1 - (s / steps) * decay); trainStep(m, trainShort[s % trainShort.length], opt, clip); }
+      return m;
+    }
+    // —— Regime B：长度课程长上下文预训练（⑤） ——
+    function trainLongModel() {
+      const m = buildTransformer(vocab, cfg, APEX.makeRng(7));
+      const opt = new AdamWOpt(m.params, baseLr, 0.9, 0.999, 1e-8, 0);
+      const phases = curric.length;
+      for (let s = 0; s < steps; s++) {
+        const phase = Math.min(phases - 1, Math.floor(s / (steps / phases)));
+        const lm = curric[phase];
+        const ex = genExampleInductionVar(APEX.makeRng(s + 1), vocab, lm[0], lm[1]);
+        opt.lr = baseLr * (1 - (s / steps) * decay);
+        trainStep(m, ex, opt, clip);
+      }
+      return m;
+    }
+
+    const mShort = trainShortModel();
+    const mLong = trainLongModel();
+
+    function evalAt(m, L, strategy) {
+      const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 500);
+      let rOpts;
+      if (strategy === 'plain') rOpts = { mode: 'none', base: 10000 };
+      else if (strategy === 'shortYaRN') {
+        const s = (L + 1) / (shortLmax + 1);
+        rOpts = { mode: 'yarn', base: 10000, scale: s, trainLen: shortLmax + 1 };
+      } else { // longYaRN
+        const s = (L + 1) / (longMax + 1);
+        rOpts = { mode: 'yarn', base: 10000, scale: s, trainLen: longMax + 1 };
+      }
+      let correct = 0, lossSum = 0;
+      data.forEach((ex) => {
+        m.params.forEach((p) => { p.grad = zeros2(p.shape[0], p.shape[1]); });
+        const r = m.forward(ex.ids, ex.pos, ex.target, rOpts);
+        lossSum += r.loss.data[0][0];
+        let best = 0; for (let j = 1; j < r.logits.length; j++) if (r.logits[j] > r.logits[best]) best = j;
+        if (best === ex.target) correct++;
+      });
+      return { loss: lossSum / data.length, acc: correct / data.length };
+    }
+
+    const res = { cfg, shortLmax, longMax, steps, testLens, perLen: {} };
+    testLens.forEach((L) => {
+      res.perLen[L] = {
+        shortYaRN: evalAt(mShort, L, 'shortYaRN'),
+        longPlain: evalAt(mLong, L, 'plain'),
+        longYaRN: evalAt(mLong, L, 'longYaRN'),
+      };
+    });
+    const maxL = Math.max.apply(null, testLens);
+    res.shortAcc = res.perLen[maxL].shortYaRN.acc;
+    res.longPlainAcc = res.perLen[maxL].longPlain.acc;
+    res.longYaRNacc = res.perLen[maxL].longYaRN.acc;
+    // 判定：⑤ 是否真正把外推从"靠补丁"变成"训出来"——长训原生 RoPE 须明显优于短训+YaRN
+    res.improved = res.longPlainAcc > res.shortAcc + 0.10;
+    return res;
+  }
+
   // ===================== 自检（可被独立实现交叉验证的不变量） =====================
   function approx(a, b, tol) { return Math.abs(a - b) <= tol; }
   function maxRelErr(a, b) {
@@ -772,7 +863,7 @@
 
   const TRANSFORMER = {
     buildTransformer, buildBaseline, runBenchmark, runGeneralizationBenchmark,
-    runExtrapolationFix, runSelfTest,
+    runExtrapolationFix, runLongContextBenchmark, runSelfTest,
     genExample, genDataset, genExampleInduction, genDatasetInduction, genExampleInductionVar,
     multiHeadAttention, rmsNorm, crossEntropy, rope, ropeWith, ropeThetas,
     matmul, add, addBias, embedding, gelu, backward, T, AdamWOpt,
