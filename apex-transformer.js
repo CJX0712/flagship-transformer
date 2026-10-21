@@ -696,6 +696,7 @@
       const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 500);
       let rOpts;
       if (strategy === 'plain') rOpts = { mode: 'none', base: 10000 };
+      else if (strategy === 'shortPlain') rOpts = { mode: 'none', base: 10000 };
       else if (strategy === 'shortYaRN') {
         const s = (L + 1) / (shortLmax + 1);
         rOpts = { mode: 'yarn', base: 10000, scale: s, trainLen: shortLmax + 1 };
@@ -717,17 +718,25 @@
     const res = { cfg, shortLmax, longMax, steps, testLens, perLen: {} };
     testLens.forEach((L) => {
       res.perLen[L] = {
+        shortPlain: evalAt(mShort, L, 'shortPlain'),
         shortYaRN: evalAt(mShort, L, 'shortYaRN'),
         longPlain: evalAt(mLong, L, 'plain'),
         longYaRN: evalAt(mLong, L, 'longYaRN'),
       };
     });
     const maxL = Math.max.apply(null, testLens);
-    res.shortAcc = res.perLen[maxL].shortYaRN.acc;
-    res.longPlainAcc = res.perLen[maxL].longPlain.acc;
-    res.longYaRNacc = res.perLen[maxL].longYaRN.acc;
-    // 判定：⑤ 是否真正把外推从"靠补丁"变成"训出来"——长训原生 RoPE 须明显优于短训+YaRN
-    res.improved = res.longPlainAcc > res.shortAcc + 0.10;
+    const sp = res.perLen[maxL].shortPlain.acc;
+    const sy = res.perLen[maxL].shortYaRN.acc;
+    const lp = res.perLen[maxL].longPlain.acc;
+    const ly = res.perLen[maxL].longYaRN.acc;
+    res.shortPlainAcc = sp; res.shortAcc = sy; res.longPlainAcc = lp; res.longYaRNacc = ly;
+    // 诚实判定（两条独立标准）：
+    //  (a) 原生外推是否被训练修复：长训原生 > 短训原生 +0.10（不看补丁）
+    res.nativeImproved = lp > sp + 0.10;
+    //  (b) 组合拳是否真正超越旧补丁：长训+YaRN > 短训+YaRN +0.10（⑤ 的真正价值）
+    res.longYaRNbeatsShort = ly > sy + 0.10;
+    //  (c) 旧判据（长训原生 > 短训补丁）：极严，通常 false，仅作参照
+    res.improved = lp > sy + 0.10;
     return res;
   }
 

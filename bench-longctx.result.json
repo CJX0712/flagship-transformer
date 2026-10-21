@@ -6,44 +6,93 @@
     "ffn": 192
   },
   "shortLmax": 7,
-  "longMax": 20,
+  "longMax": 40,
   "steps": 8000,
   "testLens": [
     30,
-    40
+    40,
+    50,
+    60
   ],
   "perLen": {
     "30": {
+      "shortPlain": {
+        "loss": 10.206693340891725,
+        "acc": 0.084
+      },
       "shortYaRN": {
         "loss": 9.315986706952263,
         "acc": 0.256
       },
       "longPlain": {
-        "loss": 4.994175093564092,
-        "acc": 0.168
+        "loss": 5.736763488097601,
+        "acc": 0.252
       },
       "longYaRN": {
-        "loss": 6.349846250710051,
-        "acc": 0.154
+        "loss": 5.906751131756375,
+        "acc": 0.282
       }
     },
     "40": {
+      "shortPlain": {
+        "loss": 9.733483189431569,
+        "acc": 0.062
+      },
       "shortYaRN": {
         "loss": 11.242609101245016,
         "acc": 0.186
       },
       "longPlain": {
-        "loss": 5.176059687482268,
-        "acc": 0.162
+        "loss": 4.579329716459937,
+        "acc": 0.316
       },
       "longYaRN": {
-        "loss": 3.652118106047814,
-        "acc": 0.392
+        "loss": 4.579329716459937,
+        "acc": 0.316
+      }
+    },
+    "50": {
+      "shortPlain": {
+        "loss": 9.66469835233876,
+        "acc": 0.092
+      },
+      "shortYaRN": {
+        "loss": 11.685080333241544,
+        "acc": 0.188
+      },
+      "longPlain": {
+        "loss": 5.157577925744191,
+        "acc": 0.236
+      },
+      "longYaRN": {
+        "loss": 6.178561897452049,
+        "acc": 0.244
+      }
+    },
+    "60": {
+      "shortPlain": {
+        "loss": 8.458019052963104,
+        "acc": 0.098
+      },
+      "shortYaRN": {
+        "loss": 12.174684199514548,
+        "acc": 0.166
+      },
+      "longPlain": {
+        "loss": 6.055279275095572,
+        "acc": 0.148
+      },
+      "longYaRN": {
+        "loss": 5.859802488466958,
+        "acc": 0.238
       }
     }
   },
-  "shortAcc": 0.186,
-  "longPlainAcc": 0.162,
-  "longYaRNacc": 0.392,
+  "shortPlainAcc": 0.098,
+  "shortAcc": 0.166,
+  "longPlainAcc": 0.148,
+  "longYaRNacc": 0.238,
+  "nativeImproved": false,
+  "longYaRNbeatsShort": false,
   "improved": false
 }
