@@ -83,7 +83,7 @@
         <thead><tr style="background:#f1f5f9"><th style="text-align:left;padding:8px 10px">实验</th><th style="text-align:left;padding:8px 10px">设置</th><th style="text-align:left;padding:8px 10px">注意力 Transformer</th><th style="text-align:left;padding:8px 10px">无注意力基线</th><th style="text-align:left;padding:8px 10px">结论</th></tr></thead>
         <tbody id="longBody"></tbody>
       </table>
-      <p style="margin:14px 0 0;font-size:13px;color:var(--sub)">复现：<code>node bench-long.js 10000</code>（约 10–15 分钟，深度基准）</p>
+      <p style="margin:14px 0 0;font-size:13px;color:var(--sub)">复现：<code>node bench-long.js 10000</code>（长上下文，约 7 分钟）· <code>node bench-extrap.js 6000</code>（外推补洞，约 4 分钟）</p>
     </div>
   </div>
 
@@ -110,12 +110,15 @@
 
   // 长上下文 / 长度外推 真实测量结果（由 node bench-long.js 10000 复现产出）
   const LONG = [
-    ['长上下文 · L=17', '训练 L∈[15,20]，d=64/4层，10000 步', 'acc 0.90 / loss 0.38', 'acc 0.14 / loss 2.50', '✅ 注意力碾压'],
-    ['长上下文 · L=20', '训练 L∈[15,20]，d=64/4层，10000 步', 'acc 0.89 / loss 0.67', 'acc 0.17 / loss 2.52', '✅ 注意力碾压'],
-    ['长度外推 · L=8', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.49', 'acc 0.15', '⚠️ 优势在衰减'],
-    ['长度外推 · L=12', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.26', 'acc 0.19', '⚠️ 优势在衰减'],
-    ['长度外推 · L=20', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.16', 'acc 0.18', '❌ 崩塌到基线'],
-    ['长度外推 · L=30', '训练仅 L∈[3,7]，测试未见长度', 'acc 0.14', 'acc 0.17', '❌ 崩塌到基线'],
+    ['长上下文 · L=17', '训练即含长 L∈[15,20]，10000 步', 'acc 0.90 / loss 0.38', 'acc 0.14 / loss 2.50', '✅ 注意力碾压'],
+    ['长上下文 · L=20', '训练即含长 L∈[15,20]，10000 步', 'acc 0.89 / loss 0.67', 'acc 0.17 / loss 2.52', '✅ 注意力碾压'],
+    ['外推 · L=8（原生RoPE）', '训练仅 L∈[3,7]，6000 步', 'acc 0.74', 'acc 0.15', '✅ 还行'],
+    ['外推 · L=12（原生RoPE）', '训练仅 L∈[3,7]，6000 步', 'acc 0.48', 'acc 0.16', '⚠️ 优势明显衰减'],
+    ['外推 · L=20（原生RoPE）', '训练仅 L∈[3,7]，6000 步', 'acc 0.32', 'acc 0.16', '⚠️ 大幅衰减'],
+    ['外推 · L=30（原生RoPE）', '训练仅 L∈[3,7]，6000 步', 'acc 0.19', 'acc 0.16', '❌ 崩塌到基线'],
+    ['补洞 · L=20（YaRN）', '同一模型，推理期换策略，免重训', 'acc 0.60', 'acc 0.16', '✅ 救回'],
+    ['补洞 · L=30（YaRN）', '同一模型，推理期换策略，免重训', 'acc 0.52', 'acc 0.16', '✅ 救回'],
+    ['补洞 · L=30（NTK-aware）', '同一模型，推理期换策略，免重训', 'acc 0.27', 'acc 0.16', '⚠️ 仅小幅改善'],
   ];
   document.getElementById('longBody').innerHTML = LONG.map((r) =>
     `<tr style="border-top:1px solid var(--line)">${r.map((c, i) => `<td style="padding:8px 10px${i === 4 ? ';font-weight:700' : ''}">${c}</td>`).join('')}</tr>`).join('');

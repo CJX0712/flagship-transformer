@@ -123,11 +123,11 @@
     out._prev = [a]; return out;
   }
   // RoPE 旋转位置编码（Su et al. 2021, arXiv:2104.09864；Llama/RoPE 系所用）
-  // 对每对维度按位置 p 旋转；作用于 Q/K，使点积依赖相对位置，支持任意长度外推。
-  function ropeRotate(row, p, base, sign) {
+  // 对每对维度按角度 θ_k·p 旋转；作用于 Q/K，使点积依赖相对位置。
+  function ropeAngular(row, p, thetas, sign) {
     const d = row.length, out = new Array(d);
     for (let i = 0; i < d; i += 2) {
-      const theta = p / Math.pow(base, i / d);
+      const theta = thetas[i / 2] * p;
       const c = Math.cos(theta), s = sign * Math.sin(theta);
       const a = row[i], b = row[i + 1];
       out[i] = a * c - b * s;
@@ -135,20 +135,50 @@
     }
     return out;
   }
-  function rope(X, positions, base) {
-    base = base || 10000;
-    const seq = X.shape[0], d = X.shape[1];
-    const Y = X.data.map((row, i) => ropeRotate(row, positions[i], base, +1));
-    const out = new T(Y);
+  // 每对维度的角频率 θ_k（含外推缩放策略）
+  //   none : θ_k = base^(-2k/d)                       —— 原生 RoPE
+  //   ntk  : base' = base·s^(d/(d-2))                 —— NTK-aware 缩放
+  //   yarn : θ_k = (1-γ)·(θ_k/s) + γ·θ_k, γ=ramp      —— NTK-by-parts（YaRN）
+  function ropeThetas(d, base, opts) {
+    opts = opts || {};
+    const n = d / 2, thetas = new Array(n);
+    const mode = opts.mode || 'none';
+    const s = opts.scale || 1;
+    const trainLen = opts.trainLen || 1;
+    if (mode === 'ntk') {
+      const b2 = base * Math.pow(s, d / (d - 2));
+      for (let k = 0; k < n; k++) thetas[k] = Math.pow(b2, -(2 * k) / d);
+    } else if (mode === 'yarn') {
+      const alpha = 1, beta = 32;
+      for (let k = 0; k < n; k++) {
+        const th = Math.pow(base, -(2 * k) / d);      // 原角频率
+        const lambda = (2 * Math.PI) / th;            // 波长
+        const r = trainLen / lambda;
+        let gamma = 0;
+        if (r >= beta) gamma = 1; else if (r > alpha) gamma = (r - alpha) / (beta - alpha);
+        thetas[k] = (1 - gamma) * (th / s) + gamma * th;
+      }
+    } else {
+      for (let k = 0; k < n; k++) thetas[k] = Math.pow(base, -(2 * k) / d);
+    }
+    return thetas;
+  }
+  function ropeWith(X, positions, opts) {
+    const d = X.shape[1], base = (opts && opts.base) || 10000;
+    const thetas = ropeThetas(d, base, opts);
+    const out = new T(X.data.map((row, i) => ropeAngular(row, positions[i], thetas, +1)));
     out._backward = () => {
-      const gX = zeros2(seq, d);
-      for (let i = 0; i < seq; i++) {
-        const g = ropeRotate(out.grad[i], positions[i], base, -1); // 反向 = 逆旋转（正交）
+      const gX = zeros2(X.shape[0], d);
+      for (let i = 0; i < X.shape[0]; i++) {
+        const g = ropeAngular(out.grad[i], positions[i], thetas, -1); // 反向 = 逆旋转
         for (let j = 0; j < d; j++) gX[i][j] = g[j];
       }
       accumulate(X, gX);
     };
     out._prev = [X]; return out;
+  }
+  function rope(X, positions, base) {
+    return ropeWith(X, positions, { base: base || 10000, mode: 'none' });
   }
   function sumAll(a) {
     let s = 0; const d = a.data;
@@ -357,15 +387,20 @@
       return Array.from({ length: seq }, (_, i) => Array.from({ length: seq }, (_, j) => (j <= i ? 1 : 0)));
     }
 
-    function forward(ids, pos, targets) {
+    function forward(ids, pos, targets, ropeOpts) {
       let x = embedding(ids, E);
       const mask = causalMask(ids.length);
+      const rOpts = ropeOpts || { mode: 'none', base: 10000 };
+      // YaRN 注意力温度缩放：t = 0.1·ln(s)+1，q/k 乘 √(1/t)
+      let attnScale = 1;
+      if (rOpts.mode === 'yarn' && rOpts.scale > 1) attnScale = Math.sqrt(1 / (0.1 * Math.log(rOpts.scale) + 1));
       for (const b of blocks) {
         const xn = rmsNorm(x, b.ln1);
         let Q = addBias(matmul(xn, b.Wq), b.bq);
         let K = addBias(matmul(xn, b.Wk), b.bk);
         const V = addBias(matmul(xn, b.Wv), b.bv);
-        Q = rope(Q, pos); K = rope(K, pos);               // RoPE 注入相对位置
+        Q = ropeWith(Q, pos, rOpts); K = ropeWith(K, pos, rOpts);
+        if (attnScale !== 1) { Q = scale(Q, attnScale); K = scale(K, attnScale); }
         const attn = multiHeadAttention(Q, K, V, heads, mask);
         const attnProj = matmul(attn, b.Wo);
         x = add(x, attnProj);
@@ -536,13 +571,72 @@
     const bs = trainModel(buildBaseline);
 
     function evalAt(m, L) {
-      const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 200);
+      const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 500);
       return evaluate(m, data);
     }
     const res = { cfg, trainLmin: Lmin, trainLmax: Lmax, steps, perLen: {} };
     testLens.forEach((L) => { res.perLen[L] = { transformer: evalAt(tf, L), baseline: evalAt(bs, L) }; });
     res.beatsBaselineEverywhere = testLens.every((L) => res.perLen[L].transformer.acc > res.perLen[L].baseline.acc);
     res.transformerWins = testLens.every((L) => res.perLen[L].transformer.acc > res.perLen[L].baseline.acc + 0.15);
+    return res;
+  }
+
+  // ===================== 外推"补洞"基准（NTK / YaRN，推理期免重训） =====================
+  // 只用短序列训练一次（plain RoPE），然后在推理期换上不同的 RoPE 缩放策略，
+  // 看能否把外推失败救回来。这是"补洞"，不是"重跑一遍换个说法"。
+  function runExtrapolationFix(opts) {
+    opts = opts || {};
+    const cfg = { d: 64, heads: 4, layers: 4, ffn: 256, maxlen: 64 };
+    const vocab = 16, Lmin = 3, Lmax = 7;
+    const steps = opts.steps || 4000;
+    const testLens = opts.testLens || [8, 12, 20, 30];
+    const trainSeqLen = Lmax + 1;                 // 训练最大序列长度（含线索位）
+    const baseLr = 3e-3, clip = 1.0, decay = 0.9;
+
+    const trng = APEX.makeRng(20261021);
+    const train = Array.from({ length: 6000 }, () => genExampleInductionVar(trng, vocab, Lmin, Lmax));
+
+    function trainModel(build) {
+      const m = build(vocab, cfg, APEX.makeRng(7));
+      const opt = new AdamWOpt(m.params, baseLr, 0.9, 0.999, 1e-8, 0);
+      for (let s = 0; s < steps; s++) { opt.lr = baseLr * (1 - (s / steps) * decay); trainStep(m, train[s % train.length], opt, clip); }
+      return m;
+    }
+    const tf = trainModel(buildTransformer);
+    const bs = trainModel(buildBaseline);
+
+    function evalStrategy(m, L, strategy) {
+      const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 500);
+      const s = (L + 1) / trainSeqLen;
+      const rOpts = strategy === 'plain' ? { mode: 'none', base: 10000 }
+        : strategy === 'ntk' ? { mode: 'ntk', base: 10000, scale: s }
+          : { mode: 'yarn', base: 10000, scale: s, trainLen: trainSeqLen };
+      let correct = 0, lossSum = 0;
+      data.forEach((ex) => {
+        m.params.forEach((p) => { p.grad = zeros2(p.shape[0], p.shape[1]); });
+        const r = m.forward(ex.ids, ex.pos, ex.target, rOpts);
+        lossSum += r.loss.data[0][0];
+        let best = 0; for (let j = 1; j < r.logits.length; j++) if (r.logits[j] > r.logits[best]) best = j;
+        if (best === ex.target) correct++;
+      });
+      return { loss: lossSum / data.length, acc: correct / data.length };
+    }
+
+    const res = { cfg, trainLmin: Lmin, trainLmax: Lmax, steps, perLen: {} };
+    testLens.forEach((L) => {
+      const data = genDatasetInduction(APEX.makeRng(L * 97 + 3), vocab, L, 500);
+      res.perLen[L] = {
+        plain: evalStrategy(tf, L, 'plain'),
+        ntk: evalStrategy(tf, L, 'ntk'),
+        yarn: evalStrategy(tf, L, 'yarn'),
+        baseline: evaluate(bs, data),
+      };
+    });
+    // 判定：在最长的未见长度上，最好策略是否明显优于 plain 且明显优于基线
+    const maxL = Math.max.apply(null, testLens);
+    const best = Math.max(res.perLen[maxL].plain.acc, res.perLen[maxL].ntk.acc, res.perLen[maxL].yarn.acc);
+    res.bestStrategy = ['plain', 'ntk', 'yarn'].filter((k) => res.perLen[maxL][k].acc === best)[0] || 'plain';
+    res.fixed = best > res.perLen[maxL].plain.acc + 0.10 && best > res.perLen[maxL].baseline.acc + 0.15;
     return res;
   }
 
@@ -677,9 +771,10 @@
   }
 
   const TRANSFORMER = {
-    buildTransformer, buildBaseline, runBenchmark, runGeneralizationBenchmark, runSelfTest,
+    buildTransformer, buildBaseline, runBenchmark, runGeneralizationBenchmark,
+    runExtrapolationFix, runSelfTest,
     genExample, genDataset, genExampleInduction, genDatasetInduction, genExampleInductionVar,
-    multiHeadAttention, rmsNorm, crossEntropy, rope,
+    multiHeadAttention, rmsNorm, crossEntropy, rope, ropeWith, ropeThetas,
     matmul, add, addBias, embedding, gelu, backward, T, AdamWOpt,
     clipGrads, globalGradNorm, trainStep, evaluate,
   };
